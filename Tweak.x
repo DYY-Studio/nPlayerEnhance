@@ -11,12 +11,37 @@ static MSHookMessageEx_t ResolveMSHookMessageEx(void) {
 
 static NSString *const kPrefKey = @"SubtitleRefreshRate";
 
-static NSString *NPLocalized(NSString *en, NSString *zh) {
-    NSString *lang = [NSLocale preferredLanguages].firstObject;
-    if (lang && [lang hasPrefix:@"zh"]) {
-        return zh;
+static NSString *NPLocalized(NSString *key, NSString *fallback) {
+    return [[NSBundle mainBundle] localizedStringForKey:key value:fallback table:nil];
+}
+
+static NSString *NPLanguageCode(void) {
+    NSString *code = [NSBundle mainBundle].preferredLocalizations.firstObject;
+    if (!code) {
+        return @"en";
     }
-    return en;
+    return code;
+}
+
+static NSString *NPTitleSubtitleRefreshRate(void) {
+    static NSDictionary<NSString *, NSString *> *table = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        table = @{
+            @"en": @"Subtitle Refresh Rate",
+            @"zh-Hans": @"字幕刷新率",
+            @"zh-Hant": @"字幕更新率",
+            @"ja": @"字幕更新頻度",
+            @"ko": @"자막 갱신 빈도",
+            @"de": @"Untertitel-Aktualisierungsrate",
+            @"fr": @"Fréquence de rafraîchissement des sous-titres",
+            @"es": @"Frecuencia de actualización de subtítulos",
+            @"ru": @"Частота обновления субтитров",
+            @"ar": @"معدل تحديث الترجمة النصية",
+        };
+    });
+    NSString *value = table[NPLanguageCode()];
+    return value ?: table[@"en"];
 }
 
 static NSInteger ScreenMaxFPS(void) {
@@ -61,7 +86,7 @@ static NSArray<NSNumber *> *AvailableRefreshRates(void) {
 static NSString *RefreshRateDetail(void) {
     NSInteger fps = ConfiguredRefreshRate();
     if (fps <= 0) {
-        return NPLocalized(@"Default", @"默认");
+        return NPLocalized(@"Default", @"Default");
     }
     return [NSString stringWithFormat:@"%ld Hz", (long)fps];
 }
@@ -75,7 +100,7 @@ static void PresentRefreshRatePicker(UITableView *tableView, NSMutableDictionary
         return;
     }
 
-    NSString *title = NPLocalized(@"Subtitle Refresh Rate", @"字幕刷新率");
+    NSString *title = NPTitleSubtitleRefreshRate();
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:title
                                                                   message:nil
                                                            preferredStyle:UIAlertControllerStyleActionSheet];
@@ -97,7 +122,7 @@ static void PresentRefreshRatePicker(UITableView *tableView, NSMutableDictionary
         }]];
     }
 
-    [sheet addAction:[UIAlertAction actionWithTitle:NPLocalized(@"Default", @"默认")
+    [sheet addAction:[UIAlertAction actionWithTitle:NPLocalized(@"Default", @"Default")
                                              style:UIAlertActionStyleDefault
                                            handler:^(UIAlertAction *action) {
         [[NSUserDefaults standardUserDefaults] removeObjectForKey:kPrefKey];
@@ -106,7 +131,7 @@ static void PresentRefreshRatePicker(UITableView *tableView, NSMutableDictionary
         [tableView reloadData];
     }]];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:NPLocalized(@"Cancel", @"取消")
+    [sheet addAction:[UIAlertAction actionWithTitle:NPLocalized(@"Cancel", @"Cancel")
                                              style:UIAlertActionStyleCancel
                                            handler:nil]];
 
@@ -139,8 +164,8 @@ static void hook_setFrameInterval(id self, SEL _cmd, NSInteger interval) {
 static id (*orig_initWithSections)(id, SEL, id);
 
 static id hook_initWithSections(id self, SEL _cmd, id sections) {
-    if ([sections isKindOfClass:[NSMutableArray class]]) {
-        NSUInteger index = NSNotFound;
+    BOOL isSubtitlePage = NO;
+    if ([sections isKindOfClass:[NSMutableArray class]] && [sections count] > 0) {
         for (NSUInteger i = 0; i < [sections count]; i++) {
             id section = [sections objectAtIndex:i];
             if (![section isKindOfClass:[NSDictionary class]]) {
@@ -148,16 +173,16 @@ static id hook_initWithSections(id self, SEL _cmd, id sections) {
             }
             id title = section[@"Title"];
             if ([title isKindOfClass:[NSString class]] && [title isEqualToString:@"SSA/ASS"]) {
-                index = i;
+                isSubtitlePage = YES;
                 break;
             }
         }
-        if (index != NSNotFound) {
-            NSMutableDictionary *section = [[sections objectAtIndex:index] mutableCopy];
-            id rawItems = section[@"Items"];
+        if (isSubtitlePage && [[sections objectAtIndex:0] isKindOfClass:[NSDictionary class]]) {
+            NSMutableDictionary *topSection = [[sections objectAtIndex:0] mutableCopy];
+            id rawItems = topSection[@"Items"];
             if ([rawItems isKindOfClass:[NSArray class]]) {
                 NSMutableDictionary *row = [NSMutableDictionary dictionary];
-                row[@"Title"] = NPLocalized(@"Subtitle Refresh Rate", @"字幕刷新率");
+                row[@"Title"] = NPTitleSubtitleRefreshRate();
                 row[@"DetailText"] = RefreshRateDetail();
                 row[@"SelectionHandler"] = ^(UITableView *tableView, NSDictionary *item) {
                     PresentRefreshRatePicker(tableView, (NSMutableDictionary *)item);
@@ -165,8 +190,8 @@ static id hook_initWithSections(id self, SEL _cmd, id sections) {
 
                 NSMutableArray *items = [rawItems mutableCopy];
                 [items addObject:row];
-                section[@"Items"] = items;
-                [sections replaceObjectAtIndex:index withObject:section];
+                topSection[@"Items"] = items;
+                [sections replaceObjectAtIndex:0 withObject:topSection];
             }
         }
     }
