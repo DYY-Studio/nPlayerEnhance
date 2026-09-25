@@ -195,6 +195,38 @@ static id hook_initWithSections(id self, SEL _cmd, id sections) {
     return self;
 }
 
+static NSString *KVOKeyForPlayerConfigKey(NSString *key) {
+    static NSDictionary<NSString *, NSString *> *table = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        table = @{
+            @"ShowSubtitles": @"showSubtitles",
+            @"TextToSpeechEnabled": @"textToSpeechEnabled",
+            @"TextToSpeechSpeakingRate": @"textToSpeechSpeakingRate",
+            @"TextToSpeechLanguage": @"textToSpeechLanguage",
+        };
+    });
+    return table[key];
+}
+
+static void (*orig_setObjectForKey)(id, SEL, id, id);
+
+static void hook_setObjectForKey(id self, SEL _cmd, id object, id key) {
+    NSString *kvoKey = nil;
+    if ([key isKindOfClass:[NSString class]]) {
+        kvoKey = KVOKeyForPlayerConfigKey(key);
+    }
+    if (kvoKey) {
+        [self willChangeValueForKey:kvoKey];
+    }
+    if (orig_setObjectForKey) {
+        orig_setObjectForKey(self, _cmd, object, key);
+    }
+    if (kvoKey) {
+        [self didChangeValueForKey:kvoKey];
+    }
+}
+
 static void InstallHooks(void) {
     MSHookMessageEx_t hook = ResolveMSHookMessageEx();
     if (!hook) {
@@ -212,6 +244,12 @@ static void InstallHooks(void) {
     SEL initWithSections = NSSelectorFromString(@"initWithSections:");
     if (settingsBase && class_getInstanceMethod(settingsBase, initWithSections)) {
         hook(settingsBase, initWithSections, (IMP)hook_initWithSections, (IMP *)&orig_initWithSections);
+    }
+
+    Class playerConfig = objc_getClass("MediaPlayerConfig");
+    SEL setObjectForKey = NSSelectorFromString(@"setObject:forKey:");
+    if (playerConfig && class_getInstanceMethod(playerConfig, setObjectForKey)) {
+        hook(playerConfig, setObjectForKey, (IMP)hook_setObjectForKey, (IMP *)&orig_setObjectForKey);
     }
 }
 

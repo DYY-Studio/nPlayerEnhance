@@ -18,6 +18,9 @@ No jailbreak. No inline hooks.
 
 With no stored value the tweak leaves `frameInterval` at nPlayer's original value. The available options are the integer divisors of `UIScreen.mainScreen.maximumFramesPerSecond` (for example 15/30/60 on a 60 Hz device).
 
+### Live Settings Sync
+- nPlayer's `-[MediaPlayerConfig setObject:forKey:]` writes values without KVO notifications, so the per-item config observer caches a snapshot and never refreshes while playing. The tweak wraps that setter and emits `willChange`/`didChange` for `ShowSubtitles`, `TextToSpeechEnabled`, `TextToSpeechSpeakingRate` and `TextToSpeechLanguage`, so toggling Show Subtitles or TTS during playback takes effect immediately.
+
 Recommend to use with `nPlayerLibassBridge`, which brings modern ASS/SSA rendering to this great player.
 
 ## Requirements
