@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <objc/message.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
 
@@ -91,55 +92,44 @@ static NSString *RefreshRateDetail(void) {
     return [NSString stringWithFormat:@"%ld Hz", (long)fps];
 }
 
-static void PresentRefreshRatePicker(UITableView *tableView, NSMutableDictionary *row) {
-    UIResponder *host = tableView;
-    while (host && ![host isKindOfClass:[UIViewController class]]) {
-        host = host.nextResponder;
-    }
-    if (!host) {
+static void PushRefreshRatePage(id host) {
+    UINavigationController *navigationController = [host navigationController];
+    Class controllerClass = objc_getClass("GlobalSettingsBaseController");
+    SEL initWithItems = NSSelectorFromString(@"initWithItems:");
+    if (!navigationController || !controllerClass || !class_getInstanceMethod(controllerClass, initWithItems)) {
         return;
     }
 
-    NSString *title = NPTitleSubtitleRefreshRate();
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:title
-                                                                  message:nil
-                                                           preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak id weakHost = host;
+    NSMutableArray<NSNumber *> *values = [NSMutableArray arrayWithObject:@0];
+    [values addObjectsFromArray:AvailableRefreshRates()];
 
-    NSInteger current = ConfiguredRefreshRate();
-    for (NSNumber *n in AvailableRefreshRates()) {
-        NSInteger v = n.integerValue;
-        NSString *itemTitle = [NSString stringWithFormat:@"%ld Hz", (long)v];
-        if (v == current) {
-            itemTitle = [itemTitle stringByAppendingString:@" ✓"];
-        }
-        [sheet addAction:[UIAlertAction actionWithTitle:itemTitle
-                                                 style:UIAlertActionStyleDefault
-                                               handler:^(UIAlertAction *action) {
-            [[NSUserDefaults standardUserDefaults] setInteger:v forKey:kPrefKey];
-            [[NSUserDefaults standardUserDefaults] synchronize];
-            row[@"DetailText"] = RefreshRateDetail();
-            [tableView reloadData];
-        }]];
+    NSMutableArray<NSDictionary *> *items = [NSMutableArray arrayWithCapacity:values.count];
+    for (NSNumber *value in values) {
+        NSInteger fps = value.integerValue;
+        NSMutableDictionary *row = [NSMutableDictionary dictionary];
+        row[@"Title"] = fps > 0 ? [NSString stringWithFormat:@"%ld Hz", (long)fps]
+                                : NPLocalized(@"Default", @"Default");
+        row[@"CellHandler"] = ^(UITableView *tableView, UITableViewCell *cell) {
+            cell.accessoryType = ConfiguredRefreshRate() == fps ? UITableViewCellAccessoryCheckmark
+                                                               : UITableViewCellAccessoryNone;
+        };
+        row[@"SelectionHandler"] = ^(UITableView *tableView, NSDictionary *item) {
+            NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+            if (fps > 0) {
+                [defaults setInteger:fps forKey:kPrefKey];
+            } else {
+                [defaults removeObjectForKey:kPrefKey];
+            }
+            [defaults synchronize];
+            [[weakHost navigationController] popViewControllerAnimated:YES];
+        };
+        [items addObject:row];
     }
 
-    [sheet addAction:[UIAlertAction actionWithTitle:NPLocalized(@"Default", @"Default")
-                                             style:UIAlertActionStyleDefault
-                                           handler:^(UIAlertAction *action) {
-        [[NSUserDefaults standardUserDefaults] removeObjectForKey:kPrefKey];
-        [[NSUserDefaults standardUserDefaults] synchronize];
-        row[@"DetailText"] = RefreshRateDetail();
-        [tableView reloadData];
-    }]];
-
-    [sheet addAction:[UIAlertAction actionWithTitle:NPLocalized(@"Cancel", @"Cancel")
-                                             style:UIAlertActionStyleCancel
-                                           handler:nil]];
-
-    if (sheet.popoverPresentationController) {
-        sheet.popoverPresentationController.sourceView = tableView;
-        sheet.popoverPresentationController.sourceRect = tableView.bounds;
-    }
-    [(UIViewController *)host presentViewController:sheet animated:YES completion:nil];
+    id page = ((id (*)(id, SEL, id))objc_msgSend)([controllerClass alloc], initWithItems, items);
+    ((void (*)(id, SEL, id))objc_msgSend)(page, NSSelectorFromString(@"setTitle:"), NPTitleSubtitleRefreshRate());
+    [navigationController pushViewController:page animated:YES];
 }
 
 static void (*orig_setFrameInterval)(id, SEL, NSInteger);
@@ -181,11 +171,15 @@ static id hook_initWithSections(id self, SEL _cmd, id sections) {
             NSMutableDictionary *topSection = [[sections objectAtIndex:0] mutableCopy];
             id rawItems = topSection[@"Items"];
             if ([rawItems isKindOfClass:[NSArray class]]) {
+                __weak id weakSelf = self;
                 NSMutableDictionary *row = [NSMutableDictionary dictionary];
                 row[@"Title"] = NPTitleSubtitleRefreshRate();
-                row[@"DetailText"] = RefreshRateDetail();
+                row[@"AccessoryType"] = @1;
+                row[@"CellHandler"] = ^(UITableView *tableView, UITableViewCell *cell) {
+                    cell.detailTextLabel.text = RefreshRateDetail();
+                };
                 row[@"SelectionHandler"] = ^(UITableView *tableView, NSDictionary *item) {
-                    PresentRefreshRatePicker(tableView, (NSMutableDictionary *)item);
+                    PushRefreshRatePage(weakSelf);
                 };
 
                 NSMutableArray *items = [rawItems mutableCopy];
