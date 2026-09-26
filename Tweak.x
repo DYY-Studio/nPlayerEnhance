@@ -1,8 +1,9 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import <objc/message.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
+
+#import "nPlayerPrivate.h"
 
 typedef void (*MSHookMessageEx_t)(Class cls, SEL sel, IMP imp, IMP *result);
 
@@ -95,8 +96,7 @@ static NSString *RefreshRateDetail(void) {
 static void PushRefreshRatePage(id host) {
     UINavigationController *navigationController = [host navigationController];
     Class controllerClass = objc_getClass("GlobalSettingsBaseController");
-    SEL initWithItems = NSSelectorFromString(@"initWithItems:");
-    if (!navigationController || !controllerClass || !class_getInstanceMethod(controllerClass, initWithItems)) {
+    if (!navigationController || !controllerClass || !class_getInstanceMethod(controllerClass, @selector(initWithItems:))) {
         return;
     }
 
@@ -127,8 +127,8 @@ static void PushRefreshRatePage(id host) {
         [items addObject:row];
     }
 
-    id page = ((id (*)(id, SEL, id))objc_msgSend)([controllerClass alloc], initWithItems, items);
-    ((void (*)(id, SEL, id))objc_msgSend)(page, NSSelectorFromString(@"setTitle:"), NPTitleSubtitleRefreshRate());
+    GlobalSettingsBaseController *page = [[controllerClass alloc] initWithItems:items];
+    page.title = NPTitleSubtitleRefreshRate();
     [navigationController pushViewController:page animated:YES];
 }
 
@@ -230,24 +230,21 @@ static void hook_setObjectForKey(id self, SEL _cmd, id object, id key) {
 static const void *kSubtitleRefreshPendingKey = &kSubtitleRefreshPendingKey;
 
 static BOOL ControllerShowsSubtitles(id controller) {
-    SEL getter = NSSelectorFromString(@"showSubtitles");
-    if (![controller respondsToSelector:getter]) {
+    if (![controller respondsToSelector:@selector(showSubtitles)]) {
         return NO;
     }
-    return ((BOOL (*)(id, SEL))objc_msgSend)(controller, getter);
+    return [(MediaPlayerController *)controller showSubtitles];
 }
 
 static void ForceSubtitleRefresh(id controller) {
-    SEL updateSubtitles = NSSelectorFromString(@"updateSubtitles");
-    if ([controller respondsToSelector:updateSubtitles]) {
-        ((void (*)(id, SEL))objc_msgSend)(controller, updateSubtitles);
+    if ([controller respondsToSelector:@selector(updateSubtitles)]) {
+        [(MediaPlayerController *)controller updateSubtitles];
     }
 
     Ivar subtitlesIvar = class_getInstanceVariable(object_getClass(controller), "_subtitles");
     Class subtitleClass = objc_getClass("Subtitle");
     Ivar bitmapIvar = subtitleClass ? class_getInstanceVariable(subtitleClass, "_bitmap") : NULL;
-    SEL pushBitmap = NSSelectorFromString(@"subtitleDidChangeWithBitmap:");
-    if (!subtitlesIvar || !bitmapIvar || ![controller respondsToSelector:pushBitmap]) {
+    if (!subtitlesIvar || !bitmapIvar || ![controller respondsToSelector:@selector(subtitleDidChangeWithBitmap:)]) {
         return;
     }
 
@@ -258,7 +255,7 @@ static void ForceSubtitleRefresh(id controller) {
     for (id subtitle in subtitles) {
         id bitmap = object_getIvar(subtitle, bitmapIvar);
         if (bitmap) {
-            ((void (*)(id, SEL, id))objc_msgSend)(controller, pushBitmap, bitmap);
+            [(MediaPlayerController *)controller subtitleDidChangeWithBitmap:bitmap];
         }
     }
 }
@@ -300,31 +297,26 @@ static void InstallHooks(void) {
     }
 
     Class displayLink = objc_getClass("CADisplayLink");
-    SEL setFrameInterval = NSSelectorFromString(@"setFrameInterval:");
-    if (displayLink && class_getInstanceMethod(displayLink, setFrameInterval)) {
-        hook(displayLink, setFrameInterval, (IMP)hook_setFrameInterval, (IMP *)&orig_setFrameInterval);
+    if (displayLink && class_getInstanceMethod(displayLink, @selector(setFrameInterval:))) {
+        hook(displayLink, @selector(setFrameInterval:), (IMP)hook_setFrameInterval, (IMP *)&orig_setFrameInterval);
     }
 
     Class settingsBase = objc_getClass("GlobalSettingsBaseController");
-    SEL initWithSections = NSSelectorFromString(@"initWithSections:");
-    if (settingsBase && class_getInstanceMethod(settingsBase, initWithSections)) {
-        hook(settingsBase, initWithSections, (IMP)hook_initWithSections, (IMP *)&orig_initWithSections);
+    if (settingsBase && class_getInstanceMethod(settingsBase, @selector(initWithSections:))) {
+        hook(settingsBase, @selector(initWithSections:), (IMP)hook_initWithSections, (IMP *)&orig_initWithSections);
     }
 
     Class playerConfig = objc_getClass("MediaPlayerConfig");
-    SEL setObjectForKey = NSSelectorFromString(@"setObject:forKey:");
-    if (playerConfig && class_getInstanceMethod(playerConfig, setObjectForKey)) {
-        hook(playerConfig, setObjectForKey, (IMP)hook_setObjectForKey, (IMP *)&orig_setObjectForKey);
+    if (playerConfig && class_getInstanceMethod(playerConfig, @selector(setObject:forKey:))) {
+        hook(playerConfig, @selector(setObject:forKey:), (IMP)hook_setObjectForKey, (IMP *)&orig_setObjectForKey);
     }
 
     Class playerController = objc_getClass("MediaPlayerController");
-    SEL setShowSubtitles = NSSelectorFromString(@"setShowSubtitles:");
-    if (playerController && class_getInstanceMethod(playerController, setShowSubtitles)) {
-        hook(playerController, setShowSubtitles, (IMP)hook_setShowSubtitles, (IMP *)&orig_setShowSubtitles);
+    if (playerController && class_getInstanceMethod(playerController, @selector(setShowSubtitles:))) {
+        hook(playerController, @selector(setShowSubtitles:), (IMP)hook_setShowSubtitles, (IMP *)&orig_setShowSubtitles);
     }
-    SEL onRenderSubtitle = NSSelectorFromString(@"onRenderSubtitle");
-    if (playerController && class_getInstanceMethod(playerController, onRenderSubtitle)) {
-        hook(playerController, onRenderSubtitle, (IMP)hook_onRenderSubtitle, (IMP *)&orig_onRenderSubtitle);
+    if (playerController && class_getInstanceMethod(playerController, @selector(onRenderSubtitle))) {
+        hook(playerController, @selector(onRenderSubtitle), (IMP)hook_onRenderSubtitle, (IMP *)&orig_onRenderSubtitle);
     }
 }
 
