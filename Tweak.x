@@ -289,6 +289,40 @@ static void hook_onRenderSubtitle(id self, SEL _cmd) {
     }
 }
 
+static void (*orig_mediaPlayerDecoderChanged)(id, SEL, BOOL);
+
+// nPlayer's H/W factory notifies before it installs the new decoder, so the
+// notification's main-queue block re-reads the still-current S/W decoder and
+// writes a stale label. Defer the notification until [nPlayerView decoder]
+// reports 2 (H/W), then let the original re-read; on timeout notify anyway so
+// the label still reflects the real state.
+static const NSUInteger kDecoderNotifyMaxAttempts = 10;
+
+static void PollDecoderThenNotify(nPlayerView *view, SEL _cmd, NSUInteger attempt) {
+    if ([view decoder] == 2 || attempt >= kDecoderNotifyMaxAttempts) {
+        if (orig_mediaPlayerDecoderChanged) {
+            orig_mediaPlayerDecoderChanged(view, _cmd, YES);
+        }
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 16 * NSEC_PER_MSEC),
+                   dispatch_get_main_queue(), ^{
+        PollDecoderThenNotify(view, _cmd, attempt + 1);
+    });
+}
+
+static void hook_mediaPlayerDecoderChanged(id self, SEL _cmd, BOOL hardware) {
+    if (!hardware) {
+        if (orig_mediaPlayerDecoderChanged) {
+            orig_mediaPlayerDecoderChanged(self, _cmd, hardware);
+        }
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        PollDecoderThenNotify((nPlayerView *)self, _cmd, 0);
+    });
+}
+
 static void InstallHooks(void) {
     MSHookMessageEx_t hook = ResolveMSHookMessageEx();
     if (!hook) {
@@ -317,6 +351,11 @@ static void InstallHooks(void) {
     }
     if (playerController && class_getInstanceMethod(playerController, @selector(onRenderSubtitle))) {
         hook(playerController, @selector(onRenderSubtitle), (IMP)hook_onRenderSubtitle, (IMP *)&orig_onRenderSubtitle);
+    }
+
+    Class playerView = objc_getClass("nPlayerView");
+    if (playerView && class_getInstanceMethod(playerView, @selector(mediaPlayerDecoderChanged:))) {
+        hook(playerView, @selector(mediaPlayerDecoderChanged:), (IMP)hook_mediaPlayerDecoderChanged, (IMP *)&orig_mediaPlayerDecoderChanged);
     }
 }
 

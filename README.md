@@ -24,6 +24,9 @@ With no stored value the tweak leaves `frameInterval` at nPlayer's original valu
 ### Subtitle Toggle Refresh
 - Hiding subtitles clears the view but leaves nPlayer's internal "current cue is active" state untouched, so turning subtitles back on stayed blank until the next cue. The tweak marks the off→on transition and, right after the next render tick recomputes the current cue, re-pushes the active text and bitmap so the correct subtitle appears immediately.
 
+### Decoder Switch Indicator
+- Switching S/W → H/W during playback left the control bar's `H/W`/`S/W` label on the old value: nPlayer's H/W decoder factory posts `mediaPlayerDecoderChanged:` *before* installing the new decoder, and the producer re-reads the current decoder on the main queue, so it captures the outdated one and never notifies again. The tweak defers that notification until `[nPlayerView decoder]` reports H/W (16 ms steps, ~160 ms cap) and then lets the original re-read. S/W → H/W now updates once with no stale flash; the H/W → S/W path is untouched.
+
 Recommend to use with `nPlayerLibassBridge`, which brings modern ASS/SSA rendering to this great player.
 
 ## Requirements
