@@ -227,6 +227,71 @@ static void hook_setObjectForKey(id self, SEL _cmd, id object, id key) {
     }
 }
 
+static const void *kSubtitleRefreshPendingKey = &kSubtitleRefreshPendingKey;
+
+static BOOL ControllerShowsSubtitles(id controller) {
+    SEL getter = NSSelectorFromString(@"showSubtitles");
+    if (![controller respondsToSelector:getter]) {
+        return NO;
+    }
+    return ((BOOL (*)(id, SEL))objc_msgSend)(controller, getter);
+}
+
+static void ForceSubtitleRefresh(id controller) {
+    SEL updateSubtitles = NSSelectorFromString(@"updateSubtitles");
+    if ([controller respondsToSelector:updateSubtitles]) {
+        ((void (*)(id, SEL))objc_msgSend)(controller, updateSubtitles);
+    }
+
+    Ivar subtitlesIvar = class_getInstanceVariable(object_getClass(controller), "_subtitles");
+    Class subtitleClass = objc_getClass("Subtitle");
+    Ivar bitmapIvar = subtitleClass ? class_getInstanceVariable(subtitleClass, "_bitmap") : NULL;
+    SEL pushBitmap = NSSelectorFromString(@"subtitleDidChangeWithBitmap:");
+    if (!subtitlesIvar || !bitmapIvar || ![controller respondsToSelector:pushBitmap]) {
+        return;
+    }
+
+    NSArray *subtitles = object_getIvar(controller, subtitlesIvar);
+    if (![subtitles isKindOfClass:[NSArray class]]) {
+        return;
+    }
+    for (id subtitle in subtitles) {
+        id bitmap = object_getIvar(subtitle, bitmapIvar);
+        if (bitmap) {
+            ((void (*)(id, SEL, id))objc_msgSend)(controller, pushBitmap, bitmap);
+        }
+    }
+}
+
+static void (*orig_setShowSubtitles)(id, SEL, BOOL);
+
+static void hook_setShowSubtitles(id self, SEL _cmd, BOOL value) {
+    BOOL wasShowing = ControllerShowsSubtitles(self);
+    if (orig_setShowSubtitles) {
+        orig_setShowSubtitles(self, _cmd, value);
+    }
+    if (value && !wasShowing) {
+        objc_setAssociatedObject(self, kSubtitleRefreshPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else if (!value) {
+        objc_setAssociatedObject(self, kSubtitleRefreshPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static void (*orig_onRenderSubtitle)(id, SEL);
+
+static void hook_onRenderSubtitle(id self, SEL _cmd) {
+    if (orig_onRenderSubtitle) {
+        orig_onRenderSubtitle(self, _cmd);
+    }
+    if (!objc_getAssociatedObject(self, kSubtitleRefreshPendingKey)) {
+        return;
+    }
+    objc_setAssociatedObject(self, kSubtitleRefreshPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (ControllerShowsSubtitles(self)) {
+        ForceSubtitleRefresh(self);
+    }
+}
+
 static void InstallHooks(void) {
     MSHookMessageEx_t hook = ResolveMSHookMessageEx();
     if (!hook) {
@@ -250,6 +315,16 @@ static void InstallHooks(void) {
     SEL setObjectForKey = NSSelectorFromString(@"setObject:forKey:");
     if (playerConfig && class_getInstanceMethod(playerConfig, setObjectForKey)) {
         hook(playerConfig, setObjectForKey, (IMP)hook_setObjectForKey, (IMP *)&orig_setObjectForKey);
+    }
+
+    Class playerController = objc_getClass("MediaPlayerController");
+    SEL setShowSubtitles = NSSelectorFromString(@"setShowSubtitles:");
+    if (playerController && class_getInstanceMethod(playerController, setShowSubtitles)) {
+        hook(playerController, setShowSubtitles, (IMP)hook_setShowSubtitles, (IMP *)&orig_setShowSubtitles);
+    }
+    SEL onRenderSubtitle = NSSelectorFromString(@"onRenderSubtitle");
+    if (playerController && class_getInstanceMethod(playerController, onRenderSubtitle)) {
+        hook(playerController, onRenderSubtitle, (IMP)hook_onRenderSubtitle, (IMP *)&orig_onRenderSubtitle);
     }
 }
 

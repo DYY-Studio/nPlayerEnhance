@@ -21,6 +21,9 @@ With no stored value the tweak leaves `frameInterval` at nPlayer's original valu
 ### Live Settings Sync
 - nPlayer's `-[MediaPlayerConfig setObject:forKey:]` writes values without KVO notifications, so the per-item config observer caches a snapshot and never refreshes while playing. The tweak wraps that setter and emits `willChange`/`didChange` for `ShowSubtitles`, `TextToSpeechEnabled`, `TextToSpeechSpeakingRate` and `TextToSpeechLanguage`, so toggling Show Subtitles or TTS during playback takes effect immediately.
 
+### Subtitle Toggle Refresh
+- Hiding subtitles clears the view but leaves nPlayer's internal "current cue is active" state untouched, so turning subtitles back on stayed blank until the next cue. The tweak marks the off→on transition and, right after the next render tick recomputes the current cue, re-pushes the active text and bitmap so the correct subtitle appears immediately.
+
 Recommend to use with `nPlayerLibassBridge`, which brings modern ASS/SSA rendering to this great player.
 
 ## Requirements
