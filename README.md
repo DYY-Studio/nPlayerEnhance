@@ -2,13 +2,13 @@
 
 > A small tribute to nPlayer, an exceptionally well-designed player that has served us reliably for years.
 
-Raises `nPlayer`'s subtitle refresh rate and exposes it as a settings item.
-
-No jailbreak. No inline hooks.
-
 > [!Warning]
 >
 > **Vibe Coding Project**
+
+Raises `nPlayer`'s subtitle refresh rate and exposes it as a settings item, and more.
+
+No jailbreak. No inline hooks. Design for sideloading and non-JIT LiveContainer.
 
 ## What it does
 
@@ -27,7 +27,7 @@ With no stored value the tweak leaves `frameInterval` at nPlayer's original valu
 ### Decoder Switch Indicator
 - Switching S/W → H/W during playback left the control bar's `H/W`/`S/W` label on the old value: nPlayer's H/W decoder factory posts `mediaPlayerDecoderChanged:` *before* installing the new decoder, and the producer re-reads the current decoder on the main queue, so it captures the outdated one and never notifies again. The tweak defers that notification until `[nPlayerView decoder]` reports H/W (16 ms steps, ~160 ms cap) and then lets the original re-read. S/W → H/W now updates once with no stale flash; the H/W → S/W path is untouched.
 
-Recommend to use with `nPlayerLibassBridge`, which brings modern ASS/SSA rendering to this great player.
+Recommend to use with `nPlayerModernBridge`, which brings modern ASS/SSA rendering to this great player.
 
 ## Requirements
 
