@@ -1,0 +1,60 @@
+name: Build nPlayerEnhance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  THEOS: ${{ runner.temp }}/theos
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Theos
+        run: |
+          set -euo pipefail
+          brew install ldid xz
+          git clone --recursive --depth 1 --shallow-submodules \
+            https://github.com/theos/theos.git "$THEOS"
+
+      - name: Build dylib and deb
+        run: |
+          set -euo pipefail
+          make clean package FINALPACKAGE=1
+
+          mkdir artifacts
+          cp .theos/obj/nPlayerEnhance.dylib artifacts/
+
+          shopt -s nullglob
+          packages=(packages/*.deb)
+          if [ "${#packages[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one deb, found ${#packages[@]}"
+            exit 1
+          fi
+          cp "${packages[0]}" artifacts/
+
+          test -s artifacts/nPlayerEnhance.dylib
+          test -s artifacts/*.deb
+
+      - name: Upload dylib
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nPlayerEnhance-dylib
+          path: artifacts/nPlayerEnhance.dylib
+          if-no-files-found: error
+
+      - name: Upload deb
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nPlayerEnhance-deb
+          path: artifacts/*.deb
+          if-no-files-found: error
