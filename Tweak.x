@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
+#import <objc/message.h>
 
 #import "nPlayerPrivate.h"
 
@@ -149,6 +150,253 @@ static void hook_setFrameInterval(id self, SEL _cmd, NSInteger interval) {
     if (orig_setFrameInterval) {
         orig_setFrameInterval(self, _cmd, interval);
     }
+}
+
+/* ---- Post Processing: scaling kernel ------------------------------------
+ *
+ * The bridge reads these preferences when it generates a shader, so a change
+ * applies to the next video rather than the one playing. */
+
+static NSString *const kScaleKernelPrefKey = @"PPVideoScaleKernel";
+static NSString *const kScaleKernelUpPrefKey = @"PPVideoScaleKernelUpscale";
+static NSString *const kAntiRingingPrefKey = @"PPVideoAntiRinging";
+
+/* The app adds a private UISwitch helper; it is not in the SDK. */
+@interface UIControl (nPlayerEnhance)
+- (void)addActionHandler:(void (^)(id sender))handler forControlEvents:(UIControlEvents)events;
+@end
+
+/* BOOL-returning getter reached through respondsToSelector:. */
+@protocol NPScaleKernelPlayer
+- (BOOL)videoPostProcessingEnabled;
+@end
+
+/* The menu rows only mean something when the bridge that reads these
+ * preferences is loaded. Its export exists only in that dylib, so a missing or
+ * failed load hides the rows instead of leaving settings that change nothing. */
+static BOOL ScaleKernelBridgeLoaded(void) {
+    static BOOL loaded = NO;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        loaded = dlsym(RTLD_DEFAULT, "npa_renderer_pp_hdr_shader_source") != NULL;
+    });
+    return loaded;
+}
+
+static NSInteger ConfiguredKernel(NSString *key) {
+    id value = [[NSUserDefaults standardUserDefaults] objectForKey:key];
+    return [value respondsToSelector:@selector(integerValue)] ? [value integerValue] : 0;
+}
+
+static NSInteger ConfiguredScaleKernel(void) {
+    return ConfiguredKernel(kScaleKernelPrefKey);
+}
+
+static NSString *ScaleKernelName(NSInteger kernel) {
+    switch (kernel) {
+        case 1: return @"Catmull-Rom";
+        case 2: return @"Mitchell";
+        case 3: return @"Bicubic A=-0.75";
+        case 4: return @"Lanczos2";
+        case 5: return @"Lanczos3";
+        case 6: return @"B-Spline";
+        case 7: return @"Spline36";
+        case 8: return @"Spline64";
+        default: return NPLocalized(@"Default", @"Default");
+    }
+}
+
+static NSString *NPTitleScaleKernel(void) {
+    static NSDictionary<NSString *, NSString *> *table = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        table = @{
+            @"en": @"Downscaling Kernel",
+            @"zh-Hans": @"缩小算法",
+            @"zh-Hant": @"縮小演算法",
+            @"ja": @"ダウンスケーリング",
+            @"ko": @"다운스케일링 커널",
+            @"de": @"Herunterskalierung",
+            @"fr": @"Noyau de réduction",
+            @"es": @"Kernel de reducción",
+            @"ru": @"Ядро уменьшения",
+            @"ar": @"نواة التصغير",
+        };
+    });
+    NSString *value = table[NPLanguageCode()];
+    return value ?: table[@"en"];
+}
+
+static NSString *NPTitleScaleKernelUp(void) {
+    static NSDictionary<NSString *, NSString *> *table = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        table = @{
+            @"en": @"Upscaling Kernel",
+            @"zh-Hans": @"放大算法",
+            @"zh-Hant": @"放大演算法",
+            @"ja": @"アップスケーリング",
+            @"ko": @"업스케일링 커널",
+            @"de": @"Hochskalierungskernel",
+            @"fr": @"Noyau d'agrandissement",
+            @"es": @"Kernel de escalado",
+            @"ru": @"Ядро увеличения",
+            @"ar": @"نواة التكبير",
+        };
+    });
+    NSString *value = table[NPLanguageCode()];
+    return value ?: table[@"en"];
+}
+
+static NSString *NPTitleAntiRinging(void) {
+    static NSDictionary<NSString *, NSString *> *table = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        table = @{
+            @"en": @"Anti-Ringing",
+            @"zh-Hans": @"抗振铃",
+            @"zh-Hant": @"抗振鈴",
+            @"ja": @"リンギング抑制",
+            @"ko": @"링잉 억제",
+            @"de": @"Ringartefakte",
+            @"fr": @"Anti-résonance",
+            @"es": @"Antirretumbo",
+            @"ru": @"Подавление звона",
+            @"ar": @"منع الرنين",
+        };
+    });
+    NSString *value = table[NPLanguageCode()];
+    return value ?: table[@"en"];
+}
+
+/* The app's own single-choice sub-pages (Color Space, Deinterlacing) use plain
+ * SettingsBaseController: alloc/init + setItems: + setTitle:. That class has no
+ * grouped section header band, which is why they show no blank strip on top. */
+static void PushScaleKernelPage(id host, NSString *key, NSString *title) {
+    UINavigationController *navigationController = [host navigationController];
+    Class controllerClass = objc_getClass("SettingsBaseController");
+    if (!navigationController || !controllerClass
+        || !class_getInstanceMethod(controllerClass, @selector(setItems:))) {
+        return;
+    }
+
+    __weak id weakHost = host;
+    NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
+    for (NSInteger kernel = 0; kernel <= 8; kernel++) {
+        NSMutableDictionary *row = [NSMutableDictionary dictionary];
+        row[@"Title"] = ScaleKernelName(kernel);
+        row[@"CellHandler"] = ^(UITableView *tableView, UITableViewCell *cell) {
+            cell.accessoryType = ConfiguredKernel(key) == kernel ? UITableViewCellAccessoryCheckmark
+                                                                : UITableViewCellAccessoryNone;
+        };
+        row[@"SelectionHandler"] = ^(UITableView *tableView, NSDictionary *item) {
+            NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+            if (kernel > 0) {
+                [defaults setInteger:kernel forKey:key];
+            } else {
+                [defaults removeObjectForKey:key];
+            }
+            [defaults synchronize];
+            [[weakHost navigationController] popViewControllerAnimated:YES];
+        };
+        [items addObject:row];
+    }
+
+    id page = ((id (*)(id, SEL))objc_msgSend)(
+        ((id (*)(id, SEL))objc_msgSend)(controllerClass, @selector(alloc)), @selector(init));
+    if (!page) {
+        return;
+    }
+    ((void (*)(id, SEL, id))objc_msgSend)(page, @selector(setItems:), items);
+    ((void (*)(id, SEL, id))objc_msgSend)(page, @selector(setTitle:), title);
+    [navigationController pushViewController:page animated:YES];
+}
+
+static void (*orig_ppRefresh)(id, SEL);
+
+/* The page rebuilds its item list on init, on setMediaPlayer: and on every
+ * toggle, and it only builds its six dependent rows while Post Processing is
+ * on. Appending here inherits that exact gating: with PP off the page has one
+ * row and ours are absent, which is the app's own convention rather than
+ * disabled rows of our own invention. */
+static void hook_ppRefresh(id self, SEL _cmd) {
+    if (orig_ppRefresh) {
+        orig_ppRefresh(self, _cmd);
+    }
+    if (!ScaleKernelBridgeLoaded()) {
+        return;
+    }
+    /* The page's own rows are gated on this flag; ours have to match, or the
+     * settings stay visible while nothing can consume them. */
+    if (![self respondsToSelector:@selector(mediaPlayer)]) {
+        return;
+    }
+    id player = [self performSelector:@selector(mediaPlayer)];
+    if (!player || ![player respondsToSelector:@selector(videoPostProcessingEnabled)]) {
+        return;
+    }
+    if (![(id<NPScaleKernelPlayer>)player videoPostProcessingEnabled]) {
+        return;
+    }
+    if (![self respondsToSelector:@selector(items)]
+        || ![self respondsToSelector:@selector(setItems:)]) {
+        return;
+    }
+    id current = [self performSelector:@selector(items)];
+    if (![current isKindOfClass:[NSArray class]]) {
+        return;
+    }
+
+    __weak id weakSelf = self;
+    NSMutableArray *items = [current mutableCopy];
+
+    NSMutableDictionary *down = [NSMutableDictionary dictionary];
+    down[@"Title"] = NPTitleScaleKernel();
+    down[@"AccessoryType"] = @1;
+    down[@"CellHandler"] = ^(UITableView *tableView, UITableViewCell *cell) {
+        cell.detailTextLabel.text = ScaleKernelName(ConfiguredScaleKernel());
+    };
+    down[@"SelectionHandler"] = ^(UITableView *tableView, NSDictionary *item) {
+        PushScaleKernelPage(weakSelf, kScaleKernelPrefKey, NPTitleScaleKernel());
+    };
+    [items addObject:down];
+
+    /* The upscaling choice falls back to the downscaling one, so an unset key
+     * shows what the bridge will actually use. */
+    NSMutableDictionary *up = [NSMutableDictionary dictionary];
+    up[@"Title"] = NPTitleScaleKernelUp();
+    up[@"AccessoryType"] = @1;
+    up[@"CellHandler"] = ^(UITableView *tableView, UITableViewCell *cell) {
+        NSInteger chosen = ConfiguredKernel(kScaleKernelUpPrefKey);
+        cell.detailTextLabel.text = ScaleKernelName(chosen ? chosen : ConfiguredScaleKernel());
+    };
+    up[@"SelectionHandler"] = ^(UITableView *tableView, NSDictionary *item) {
+        PushScaleKernelPage(weakSelf, kScaleKernelUpPrefKey, NPTitleScaleKernelUp());
+    };
+    [items addObject:up];
+
+    /* Same shape the app uses for its own switch row: build the UISwitch in
+     * the cell handler, attach it as the accessory, and turn selection off. */
+    NSMutableDictionary *ring = [NSMutableDictionary dictionary];
+    ring[@"Title"] = NPTitleAntiRinging();
+    ring[@"CellHandler"] = ^(UITableView *tableView, UITableViewCell *cell) {
+        UISwitch *toggle = [[UISwitch alloc] initWithFrame:CGRectZero];
+        toggle.on = ConfiguredKernel(kAntiRingingPrefKey) != 0;
+        [toggle addActionHandler:^(UISwitch *sender) {
+            NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+            if (sender.isOn) {
+                [defaults setInteger:1 forKey:kAntiRingingPrefKey];
+            } else {
+                [defaults removeObjectForKey:kAntiRingingPrefKey];
+            }
+            [defaults synchronize];
+        } forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = toggle;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    };
+    [items addObject:ring];
+
+    ((void (*)(id, SEL, id))objc_msgSend)(self, @selector(setItems:), items);
 }
 
 static id (*orig_initWithSections)(id, SEL, id);
@@ -338,6 +586,11 @@ static void InstallHooks(void) {
     Class settingsBase = objc_getClass("GlobalSettingsBaseController");
     if (settingsBase && class_getInstanceMethod(settingsBase, @selector(initWithSections:))) {
         hook(settingsBase, @selector(initWithSections:), (IMP)hook_initWithSections, (IMP *)&orig_initWithSections);
+    }
+
+    Class ppSettings = objc_getClass("MediaPlayerVideoPostProcessingSettingController");
+    if (ppSettings && class_getInstanceMethod(ppSettings, @selector(refresh))) {
+        hook(ppSettings, @selector(refresh), (IMP)hook_ppRefresh, (IMP *)&orig_ppRefresh);
     }
 
     Class playerConfig = objc_getClass("MediaPlayerConfig");
